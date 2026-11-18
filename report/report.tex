@@ -254,11 +254,15 @@ System & Query EM & F1 score \\
 \quad After 10 epochs (greedy) & 63.95 & 79.06 \\
 \midrule
 \multicolumn{3}{l}{\textbf{Test results}} \\
-\quad T5 fine-tuning & \textcolor{red}{TODO} & \textcolor{red}{TODO} \\
+\quad T5 fine-tuning (greedy) & -- & 81.68 \\
 \bottomrule
 \end{tabular}
-\caption{Development and test results. Query EM = SQL exact match.}
+\caption{Development and test results. Query EM = SQL exact match. The test Query EM is not available because the
+gold test SQL is hidden.}
 \end{table}
+
+\textbf{Additional test metrics (autograder):} Record EM 78.70, and 27/432 (6.25\%) of the generated test queries raised an
+SQL error.
 
 \textbf{Additional dev metrics for the full model:} Record EM 82.62, and 7.73\% of the generated queries raised an SQL
 error. During training, the per-epoch dev scores (greedy) were: Record F1 34.7 (epoch 0), 53.0, 59.0, 58.5, 67.3,
