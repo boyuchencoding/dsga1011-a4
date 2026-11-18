@@ -1,0 +1,23 @@
+# environments
+.venv/
+__pycache__/
+
+# model weights (uploaded to Google Drive instead)
+part1/out/
+part1/out_augmented/
+part2/checkpoints/
+
+# logs
+*.log
+*.err
+part2/req_nobnb.txt
+
+# LaTeX build files
+report/*.aux
+report/*.out
+report/*.toc
+
+# from the original repo
+.DS_Store
+*.pyc
+.claude/settings.local.json

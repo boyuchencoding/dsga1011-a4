@@ -1,0 +1,144 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+\title{DS-GA 1011 Assignment 4}
+\author{Boyu Chen}
+\date{}
+
+\begin{document}
+\maketitle
+
+\textbf{Code (GitHub):} \url{https://github.com/boyuchencoding/dsga1011-a4}\\
+\textbf{Q7 model checkpoint (Google Drive):} \url{https://drive.google.com/drive/folders/13cO9wzcfDiukEQS7DSnA-_ljzPwiTYPX?usp=sharing}
+
+All experiments were run locally on an NVIDIA RTX 4070 Laptop GPU (8\,GB).
+
+\section{Part 1: Fine-tuning BERT for Sentiment Classification}
+
+\subsection{Q1. Fine-tuning BERT (\texttt{bert\_finetuning})}
+
+The training loop is in \texttt{part1/main.py} (\texttt{do\_train}). For every epoch and every batch, the
+batch is moved to the GPU, a forward pass with the labels returns the cross-entropy loss, and then
+\texttt{loss.backward()}, \texttt{optimizer.step()}, \texttt{lr\_scheduler.step()} and
+\texttt{optimizer.zero\_grad()} are called. The default hyperparameters were kept
+(\texttt{bert-base-cased}, AdamW, learning rate $5\times10^{-5}$, linear decay, batch size 8, 3 epochs).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+Run & Accuracy \\
+\midrule
+Debug (4k train / 1k test subset) & 89.70 \\
+Full training, original test set (25k) & \textbf{93.16} \\
+\bottomrule
+\end{tabular}
+\caption{BERT fine-tuning results. Output file: \texttt{out\_original.txt}.}
+\end{table}
+
+\subsection{Q2a. Data transformation (\texttt{data\_transformation\_design})}
+
+\textbf{Transformation: keyboard typos.} Each review is split on whitespace and on HTML tags
+(e.g.\ \texttt{<br />}); separators are kept so the text can be rebuilt exactly. Every token that is purely
+alphabetic ASCII and has at least 4 letters is selected independently with probability $p=0.5$. In a selected
+word, one letter position is chosen uniformly at random and that letter is replaced by a uniformly random
+neighbouring key on a QWERTY keyboard (e.g.\ \texttt{a}$\to$\{\texttt{q,s,z}\}, \texttt{o}$\to$\{\texttt{i,p,l}\},
+\texttt{m}$\to$\{\texttt{n,j,k}\}); the case of the letter is preserved. Short words ($<4$ letters), numbers,
+punctuation and HTML tags are never changed. The random generator is seeded (\texttt{random.seed(0)}), so the
+transformed test set is reproducible.
+
+\textit{Example:} ``When I unsuspectedly rented A Thousand Acres, \ldots\ of course Michelle Pfeiffer was in it''
+$\to$ ``When I unsuspectedly rented A Thousan\textbf{c} Acres, \ldots\ of c\textbf{p}urse M\textbf{k}chelle
+Pfeiffer was in it''.
+
+\textbf{Why it is reasonable.} Hitting an adjacent key is the most common kind of typo when people type
+quickly, especially on phones, and online reviews are full of such mistakes. Every changed word differs by a
+single character, so a human can still read the review and would give it the same sentiment label. At the
+same time the transformation is not trivial for BERT: a cased WordPiece tokenizer splits a misspelled word
+(``wonderfuoly'') into rare sub-word pieces that the model rarely saw in training, so the sentiment cue carried
+by that word can be lost.
+
+\subsection{Q2b. Implementation (\texttt{data\_transformation\_impl})}
+
+Implemented in \texttt{custom\_transform} in \texttt{part1/utils.py} (constants \texttt{TYPO\_PROB=0.5} and
+\texttt{QWERTY\_NEIGHBORS}). I first tried $p=0.3$, which only dropped accuracy by 2.8 points, and increased it to
+$p=0.5$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Test set & Accuracy & Change \\
+\midrule
+Original & 93.16 & -- \\
+Transformed, $p=0.3$ (not used) & 90.34 & $-2.82$ \\
+Transformed, $p=0.5$ (final) & \textbf{87.95} & $\mathbf{-5.21}$ \\
+\bottomrule
+\end{tabular}
+\caption{Model from Q1 on the original and transformed test sets. Output file: \texttt{out\_transformed.txt}.}
+\end{table}
+
+\subsection{Q3. Data augmentation (\texttt{data\_augmentation})}
+
+\texttt{create\_augmented\_dataloader} (\texttt{part1/main.py}) samples 5{,}000 random training examples
+(\texttt{shuffle(seed=42).select(range(5000))}), applies \texttt{custom\_transform} to them, concatenates them
+with the full 25k original training set (30k examples in total, 15{,}006 positive / 14{,}994 negative),
+tokenizes them exactly like the original data and returns a shuffled \texttt{DataLoader}.
+
+\textbf{Note on the learning rate.} With the default learning rate $5\times10^{-5}$ the augmented run diverged:
+the model predicted the same class for every input (50.0\% on both test sets). I checked that the augmented
+dataset itself was correct (sizes, labels and transformed text), so this was a training instability, and I
+retrained with learning rate $2\times10^{-5}$ (all other settings unchanged).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Model & Original test & Transformed test \\
+\midrule
+Q1 model (original data, lr $5\times10^{-5}$) & 93.16 & 87.95 \\
+Augmented, lr $5\times10^{-5}$ (diverged) & 50.00 & 50.00 \\
+Augmented, lr $2\times10^{-5}$ (final) & \textbf{93.52} & \textbf{90.60} \\
+\bottomrule
+\end{tabular}
+\caption{Effect of data augmentation. Output files: \texttt{out\_augmented\_original.txt},
+\texttt{out\_augmented\_transformed.txt}.}
+\end{table}
+
+\textbf{(1) Transformed test set.} Accuracy improved from 87.95 to 90.60 ($+2.65$), so the gap to the original
+test set shrank from 5.2 to 2.9 points. Augmentation recovers about half of the drop, but not all of it.
+
+\textbf{(2) Original test set.} Accuracy did not get worse; it went from 93.16 to 93.52 ($+0.36$), which is
+within run-to-run noise. Augmentation did not hurt clean performance.
+
+\textbf{Intuitive explanation.} The Q1 model never saw misspelled words, so the unusual sub-word pieces that typos
+create carry no learned sentiment signal. In the augmented data, 5k reviews contain these pieces with the same
+labels as before, so the model learns that ``wonderfuoly'' behaves like ``wonderfully'' and relies less on the
+exact spelling of a few key words. Because the augmented examples keep their labels and the original 25k
+examples are all still there, the clean distribution is not distorted and accuracy on the original test set
+stays the same. One caveat: the final augmented model used a smaller learning rate than the Q1 model, so a
+small part of the difference may come from the learning rate rather than from augmentation.
+
+\textbf{Limitation.} The augmentation only covers the exact shift we designed (QWERTY single-letter typos with a
+fixed rate). Real OOD data can shift in many other ways (synonyms, slang, abbreviations, other domains, other
+typo patterns), and the model is not made robust to those. To handle each new shift we would have to know it in
+advance, write a new transformation and retrain, which does not scale and cannot cover unknown shifts. Even for
+the known shift the gain is partial (2.9 points remain), since 5k transformed examples are only 17\% of the
+training data.
+
+\section{Part 2: Fine-tuning T5 for Text-to-SQL}
+
+%%PART2%%
+
+\end{document}
