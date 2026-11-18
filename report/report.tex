@@ -4,9 +4,12 @@
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{enumitem}
+\usepackage{float}
+\usepackage{xurl}
 \usepackage{hyperref}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
+\usepackage{xcolor}
 
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \setlength{\parindent}{0pt}
@@ -17,10 +20,11 @@
 \date{}
 
 \begin{document}
+\sloppy
 \maketitle
 
 \textbf{Code (GitHub):} \url{https://github.com/boyuchencoding/dsga1011-a4}\\
-\textbf{Q7 model checkpoint (Google Drive):} \url{https://drive.google.com/drive/folders/13cO9wzcfDiukEQS7DSnA-_ljzPwiTYPX?usp=sharing}
+\textbf{Q7 model checkpoint (Google Drive):} \url{https://drive.google.com/drive/folders/1UxQlT3c9iZeyyRQ7PWJko5wvsoJhgQ1u?usp=sharing}
 
 All experiments were run locally on an NVIDIA RTX 4070 Laptop GPU (8\,GB).
 
@@ -34,7 +38,7 @@ batch is moved to the GPU, a forward pass with the labels returns the cross-entr
 \texttt{optimizer.zero\_grad()} are called. The default hyperparameters were kept
 (\texttt{bert-base-cased}, AdamW, learning rate $5\times10^{-5}$, linear decay, batch size 8, 3 epochs).
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lr}
 \toprule
@@ -75,7 +79,7 @@ Implemented in \texttt{custom\_transform} in \texttt{part1/utils.py} (constants 
 \texttt{QWERTY\_NEIGHBORS}). I first tried $p=0.3$, which only dropped accuracy by 2.8 points, and increased it to
 $p=0.5$.
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -101,7 +105,7 @@ the model predicted the same class for every input (50.0\% on both test sets). I
 dataset itself was correct (sizes, labels and transformed text), so this was a training instability, and I
 retrained with learning rate $2\times10^{-5}$ (all other settings unchanged).
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -139,6 +143,186 @@ training data.
 
 \section{Part 2: Fine-tuning T5 for Text-to-SQL}
 
-%%PART2%%
+The code is in \texttt{part2/load\_data.py} (data processing and collate functions),
+\texttt{part2/t5\_utils.py} (model initialization, checkpointing) and \texttt{part2/train\_t5.py}
+(evaluation loop, test inference, bf16 training). \texttt{part2/analyze\_errors.py} produces the statistics in
+Table~\ref{tab:errors}.
+
+\subsection{Q4. Data statistics and processing (\texttt{data\_stats})}
+
+All lengths are counted in T5 tokens (\texttt{google-t5/t5-small} tokenizer). ``Before'' tokenizes the raw lines
+without special tokens. ``After'' is exactly what the model sees: the prefixed input and the processed SQL, with the
+final \texttt{</s>} (see Q5). Vocabulary size is the number of distinct token ids used in that split.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Statistics name & Train & Dev \\
+\midrule
+Number of examples & 4{,}225 & 466 \\
+Mean sentence length & 17.10 & 17.07 \\
+Mean SQL query length & 216.37 & 210.05 \\
+Max sentence / SQL length & 59 / 510 & 43 / 502 \\
+Vocabulary size (natural language) & 791 & 465 \\
+Vocabulary size (SQL) & 555 & 395 \\
+\texttt{<unk>} tokens in SQL & 510 & 55 \\
+\bottomrule
+\end{tabular}
+\caption{Data statistics before any pre-processing.}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Statistics name & Train & Dev \\
+\midrule
+\multicolumn{3}{l}{\textit{Model name: \texttt{google-t5/t5-small} (fine-tuned)}} \\
+Mean sentence length & 23.10 & 23.07 \\
+Mean SQL query length & 217.49 & 211.17 \\
+Max sentence / SQL length & 65 / 511 & 49 / 503 \\
+Vocabulary size (natural language) & 796 & 470 \\
+Vocabulary size (SQL) & 557 & 397 \\
+\texttt{<unk>} tokens in SQL & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Data statistics after pre-processing (task prefix, comparison-operator mapping, \texttt{</s>}).}
+\end{table}
+
+The test set has 432 natural-language queries and no SQL. The most important observation is that the T5 vocabulary
+has no ``\texttt{<}'' character. Every \texttt{<} and \texttt{<=} in the SQL becomes \texttt{<unk>}: 510 times in
+train and 55 in dev. A model trained on this could never output a correct ``less than'' condition. After my
+processing there are no \texttt{<unk>} tokens left. SQL queries are also very long (about 217 tokens on average, at
+most 511), about 13 times longer than the questions.
+
+\subsection{Q5. T5 fine-tuning details (\texttt{t5\_finetuning\_details})}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+Design choice & Description \\
+\midrule
+Data processing &
+Input: \texttt{"translate English to SQL: "} + question, following T5's task-prefix format. Output: whitespace is
+normalized, and \texttt{<=} $\to$ \texttt{lte} and \texttt{<} $\to$ \texttt{lt} (as separate words) because
+``\texttt{<}'' is not in the T5 vocabulary. After generation the mapping is inverted with word-boundary regexes
+(\texttt{lte}$\to$\texttt{<=}, \texttt{lt}$\to$\texttt{<}). The words \texttt{lt}/\texttt{lte} never occur in the
+data, and the round trip (encode, tokenize, decode, invert) reproduces every train and dev query exactly. No examples
+were removed or truncated. \\
+\addlinespace
+Tokenization &
+Default \texttt{T5TokenizerFast} (\texttt{google-t5/t5-small}) for both encoder and decoder. Encoder ids end with
+\texttt{</s>}. Decoder target = SQL ids + \texttt{</s>}. Decoder input = \texttt{<extra\_id\_0>} (used as the
+start token) followed by the target shifted right by one (teacher forcing). Batches are padded dynamically with pad
+id 0; the encoder mask is \texttt{ids != 0}, and the loss ignores padded target positions. At inference, generation
+starts from \texttt{<extra\_id\_0>} and is decoded with \texttt{skip\_special\_tokens=True} and
+\texttt{clean\_up\_tokenization\_spaces=False}. \\
+\addlinespace
+Architecture &
+Pretrained \texttt{T5ForConditionalGeneration} from \texttt{google-t5/t5-small} (60M parameters). The entire model
+(encoder, decoder, shared embeddings, LM head) is fine-tuned; no layers are frozen and no new layers are added. \\
+\addlinespace
+Hyperparameters &
+AdamW ($\beta=(0.9,0.999)$, $\epsilon=10^{-8}$), learning rate $3\times10^{-4}$, weight decay 0, cosine schedule
+without warmup over 25 epochs, batch size 16, token-level cross-entropy. Training uses bfloat16 autocast (the loss
+is computed in fp32). Stopping: dev Record F1 is measured after every epoch with greedy decoding, the best
+checkpoint is kept, and training stops after 5 epochs without improvement (max 25). I stopped the run manually during
+epoch 16, after two epochs without improvement, because the result was already well above the target. The final
+model is the best checkpoint (epoch 13). Decoding: greedy, \texttt{max\_new\_tokens}=512 (longest SQL is 511 tokens).
+Seed 42. \\
+\bottomrule
+\end{tabularx}
+\caption{Details of the best-performing T5 model configuration (fine-tuned).}
+\end{table}
+
+\subsection{Q6. Results and error analysis (\texttt{t5\_results})}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+System & Query EM & F1 score \\
+\midrule
+\multicolumn{3}{l}{\textbf{Dev results}} \\
+\multicolumn{3}{l}{\textit{T5 fine-tuned}} \\
+\quad Full model (epoch 13, greedy decoding) & \textbf{67.81} & \textbf{84.46} \\
+\quad Same checkpoint, beam search ($k=4$) & 59.66 & 79.78 \\
+\quad After 1 epoch (greedy) & 14.81 & 34.72 \\
+\quad After 5 epochs (greedy) & 45.71 & 67.32 \\
+\quad After 10 epochs (greedy) & 63.95 & 79.06 \\
+\midrule
+\multicolumn{3}{l}{\textbf{Test results}} \\
+\quad T5 fine-tuning & \textcolor{red}{TODO} & \textcolor{red}{TODO} \\
+\bottomrule
+\end{tabular}
+\caption{Development and test results. Query EM = SQL exact match.}
+\end{table}
+
+\textbf{Additional dev metrics for the full model:} Record EM 82.62, and 7.73\% of the generated queries raised an SQL
+error. During training, the per-epoch dev scores (greedy) were: Record F1 34.7 (epoch 0), 53.0, 59.0, 58.5, 67.3,
+70.6, 74.4, 77.7, 77.2, 79.1, 82.0, 81.1, 83.0, \textbf{83.6} (epoch 13), 82.2, 83.2. The SQL error rate dropped
+from 50.4\% to 8.6\%. (These per-epoch numbers used the starter's 120\,s total time limit for running the queries.
+For the final evaluation I raised \texttt{timeout\_secs} in \texttt{utils.py} to 600\,s, which is allowed by its
+docstring. This lets slow but valid queries finish, and is why the final dev F1 is 84.46 instead of 83.6.)
+
+\textbf{Beam search vs.\ greedy.} With the same checkpoint, beam search ($k=4$) was clearly worse than greedy decoding
+(79.78 vs.\ 84.46 F1; 113 vs.\ 81 wrong record sets). Beam search prefers sequences with higher total
+log-probability. Here that often meant dropping or changing a condition (52 vs.\ 37 constant errors), so I used
+greedy decoding for the final model.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}p{2.2cm}p{4.9cm}Yp{1.5cm}@{}}
+\toprule
+Error type & Example of error & Error description & Statistics \\
+\midrule
+Invalid SQL (syntax / incomplete) &
+NL: ``list all flights from boston to san francisco with the maximum number of stops''. Prediction starts
+\texttt{SELECT count( DISTINCT flight\_1.flight\_id ) \ldots} and fails with \texttt{near ")": syntax error}. &
+The query cannot be executed. Most cases (22 of 30) have unbalanced parentheses: the model loses track of nesting in
+long queries with sub-queries (e.g.\ \texttt{MIN}/\texttt{MAX} superlatives), so it closes too few or too many
+brackets or starts a wrong nested \texttt{SELECT}. &
+30/466 \\
+\addlinespace
+Wrong constant values (times, dates, codes) &
+NL: ``flights arriving in baltimore from philadelphia at about 4 o'clock''. Gold: \texttt{arrival\_time BETWEEN 1530
+AND 1630}; prediction: \texttt{\ldots 1630 \ldots 1630}. Also ``before 8'' $\to$ extra condition
+\texttt{departure\_time BETWEEN 0 AND 1200}. &
+The SQL structure is right but a literal in a condition is wrong, missing or added. Vague time expressions (``about
+4'', ``morning'', ``before 8'') have to be mapped to the dataset's conventions, and the model guesses the wrong range
+or adds a ``morning'' filter that the gold query does not have. &
+37/466 \\
+\addlinespace
+Wrong SELECT target &
+NL: ``\ldots after 5pm but i want to know what kind of airplane it's on''. Gold selects
+\texttt{flight\_1.flight\_id}; prediction selects \texttt{aircraft\_1.aircraft\_code}. Also ``what is ord'' $\to$
+\texttt{ground\_service\_1.transport\_type} instead of \texttt{airport\_1.airport\_code}. &
+The query runs but returns a different column or entity than the gold query. Questions that mention several entities
+(flight and aircraft) or are very short and ambiguous make the model pick the wrong output column. &
+7/466 \\
+\addlinespace
+Wrong logic / direction &
+NL: ``airlines that fly to miami from new york on friday''. Prediction joins \texttt{flight\_1.to\_airport} with
+NEW YORK (direction swapped). ``flights to and from love field'' $\to$ \texttt{AND} instead of \texttt{OR}. &
+Same literals and columns, but conditions are attached to the wrong field or combined with the wrong boolean
+operator. ``to X from Y'' (the reverse of the usual ``from Y to X'' order) and ``to and from'' are rare in training. &
+6/466 \\
+\bottomrule
+\end{tabularx}
+\caption{Qualitative error analysis on the dev set for the final model (greedy). TOTAL is all 466 dev queries; the
+remaining wrong outputs are 1 query with a missing table. Overall 81/466 queries return a different record set from
+the gold query.}
+\label{tab:errors}
+\end{table}
+
+\subsection{Q7. Performance evaluation (\texttt{t5\_performance})}
+
+The submitted files are \texttt{part2/results/t5\_ft\_experiment\_test.sql} and
+\texttt{part2/records/t5\_ft\_experiment\_test.pkl} (432 queries, in the order of \texttt{data/test.nl}). They were
+generated with greedy decoding from the best checkpoint, which is in the Google Drive folder linked at the top. The dev set gives
+Record F1 84.46 with the same model and decoding.
 
 \end{document}

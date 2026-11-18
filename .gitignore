@@ -21,3 +21,11 @@ report/*.toc
 .DS_Store
 *.pyc
 .claude/settings.local.json
+
+# personal notes
+STUDY_GUIDE.md
+
+# checkpoint archive (uploaded to Google Drive)
+part2/*.zip
+part2/ablation/*.log
+report/cheatsheet.*

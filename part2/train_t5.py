@@ -55,6 +55,8 @@ def get_args():
                         help="Beam size for the per-epoch dev evaluation during training (1 = greedy, faster)")
     parser.add_argument('--bf16', type=int, default=1, help="Use bfloat16 autocast on GPU")
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--eval_only', action='store_true',
+                        help="Skip training; evaluate the saved best checkpoint on dev and run test inference")
 
     args = parser.parse_args()
     return args
@@ -223,11 +225,12 @@ def main():
 
     # Load the data and the model
     train_loader, dev_loader, test_loader = load_t5_data(args.batch_size, args.test_batch_size)
-    model = initialize_model(args)
-    optimizer, scheduler = initialize_optimizer_and_scheduler(args, model, len(train_loader))
+    if not args.eval_only:
+        model = initialize_model(args)
+        optimizer, scheduler = initialize_optimizer_and_scheduler(args, model, len(train_loader))
 
-    # Train 
-    train(args, model, train_loader, dev_loader, optimizer, scheduler)
+        # Train
+        train(args, model, train_loader, dev_loader, optimizer, scheduler)
 
     # Evaluate
     model = load_model_from_checkpoint(args, best=True)
